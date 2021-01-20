@@ -11,6 +11,8 @@
 #include "gurobi_c++.h"
 #include "karger.hpp"
 
+#include "cxxopts/cxxopts.hpp"
+
 struct Point 
 {
     double x;
@@ -29,11 +31,12 @@ class subtourelim: public GRBCallback
     public:
         GRBVar** x;
         int N, V;
-        double C;
+        double C, coefficient;
         double* demands;
+        bool use_log;
         karger::EdgeVector cut_generator;
-        subtourelim(GRBVar** x, double* demands, int N, int V, double C):
-            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1) {};
+        subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log):
+            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log) {};
 
     protected:
         void callback()
@@ -144,7 +147,7 @@ class subtourelim: public GRBCallback
                         cut_generator.add_edge(i, j, getNodeRel(x[i][j]));
 
                 // Run Karger 
-                for (int count = 0; count < 10 * N; count++)
+                for (int count = 0; count < coefficient * (use_log ? std::log(N) : N); count++)
                 {
                     sum_of_demands.clear();
                     auto cuts = cut_generator.randomCut(demands, sum_of_demands, V);
@@ -176,17 +179,56 @@ class subtourelim: public GRBCallback
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2)
-    {
-        std::cout << "Usage: vrp <filename>" << std::endl;
-        return 1;
-    }
     int V, N;
-    double C;
+    double C, time_limit;
+    double coefficient;
+    bool use_log, use_heur;
+    std::vector<Point> clients;
+    double **heur_vals = nullptr;
 
-    std::vector<Point> clients = getPointsFromFile(argv[1], &V, &C);
+    cxxopts::Options options("CVRPSolver", "Outputs an exact solution for a CVRP instance");
+    options.add_options()
+        ("f,file", "Input file name", cxxopts::value<std::string>())
+        ("H,use-heuristic", "Use a heuristic solution from <input-file-name>.heu", cxxopts::value<bool>()->default_value("false"))
+        ("C,karger-coefficient", "Constant coefficient for how many times Karger's Algorithm will be executed", cxxopts::value<double>()->default_value("10.0"))
+        ("l,use-log-n", "Run Karger's Algorithm O(log n) times instead of O(n)", cxxopts::value<bool>()->default_value("false"))
+        ("t,time-limit", "Time limit for the solver (in seconds)", cxxopts::value<double>()->default_value("3600.0"))
+        ("h,help", "Prints this page")
+    ;
+
+    auto command_line = options.parse(argc, argv);
+
+    try 
+    {
+
+    if (command_line.count("help"))
+    {
+        std::cout << options.help() << std::endl;
+        exit(0);
+    }
+
+    if (!command_line.count("file"))
+    {
+        std::cout << options.help() << std::endl;
+        exit(1);
+    }
+
+    coefficient = command_line["karger-coefficient"].as<double>();
+    use_log = command_line["use-log-n"].as<bool>();
+    use_heur = command_line["use-heuristic"].as<bool>();
+    time_limit = command_line["time-limit"].as<double>();
+
+    clients = getPointsFromFile(command_line["file"].as<std::string>(), &V, &C);
     N = clients.size();
-    double **heur_vals = getHeuristicSol(argv[1], N, V);
+
+    if (use_heur)
+        heur_vals = getHeuristicSol(command_line["file"].as<std::string>(), N, V);
+
+    }
+    catch(cxxopts::OptionException* e) {
+        std::cout << options.help() << std::endl;
+        exit(1);
+    }
 
     try
     {
@@ -195,7 +237,7 @@ int main(int argc, char *argv[])
 
         GRBModel model = GRBModel(env);
         model.set(GRB_IntParam_LazyConstraints, 1);
-        model.set(GRB_DoubleParam_TimeLimit, 1 * 60 * 60);
+        model.set(GRB_DoubleParam_TimeLimit, time_limit);
 
         // x_e variables
         GRBVar **x = new GRBVar*[N];
@@ -208,15 +250,19 @@ int main(int argc, char *argv[])
                 std::string varname = "x[" + std::to_string(i) + "][" + std::to_string(j) + "]";
                 double upper_limit = j == 0 ? 2.0 : 1.0;
                 row[j] = model.addVar(0.0, upper_limit, dist(clients[i], clients[j]), GRB_INTEGER, varname);
-                row[j].set(GRB_DoubleAttr_Start, heur_vals[i][j]);
+                if (use_heur)
+                    row[j].set(GRB_DoubleAttr_Start, heur_vals[i][j]);
             }
             x[i] = row;
         }
 
         // Free heuristic values space
-        for (int i = 1; i < N; i++)
-            delete[] heur_vals[i];
-        delete[] heur_vals;
+        if (use_heur)
+        {
+            for (int i = 1; i < N; i++)
+                delete[] heur_vals[i];
+            delete[] heur_vals;
+        }
 
         // Degree constraints (clients)
         for (int i = 1; i < N; i++)
@@ -238,12 +284,12 @@ int main(int argc, char *argv[])
         for (int i = 0; i < N; i++)
             demands[i] = clients[i].d;
 
-        subtourelim cb(x, demands, N, V, C);
+        subtourelim cb(x, demands, N, V, C, coefficient, use_log);
         model.setCallback(&cb);
         model.optimize();
 
         printf("\nGap: %lf\nRuntime: %lf\n", model.get(GRB_DoubleAttr_MIPGap), model.get(GRB_DoubleAttr_Runtime));
-        writeSolution(x, N, V, model.get(GRB_DoubleAttr_ObjVal), 1, argv[1]);
+        writeSolution(x, N, V, model.get(GRB_DoubleAttr_ObjVal), 1, command_line["file"].as<std::string>());
 
         // Deallocating
         for (int i = 1; i < N; i++)
