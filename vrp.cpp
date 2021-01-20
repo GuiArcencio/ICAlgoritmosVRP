@@ -192,7 +192,7 @@ int main(int argc, char *argv[])
         ("H,use-heuristic", "Use a heuristic solution from <input-file-name>.heu", cxxopts::value<bool>()->default_value("false"))
         ("C,karger-coefficient", "Constant coefficient for how many times Karger's Algorithm will be executed", cxxopts::value<double>()->default_value("10.0"))
         ("l,use-log-n", "Run Karger's Algorithm O(log n) times instead of O(n)", cxxopts::value<bool>()->default_value("false"))
-        ("t,time-limit", "Time limit for the solver (in seconds)", cxxopts::value<double>()->default_value("3600.0"))
+        ("t,time-limit", "Time limit for the solver in seconds", cxxopts::value<double>()->default_value("3600.0"))
         ("h,help", "Prints this page")
     ;
 
