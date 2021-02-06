@@ -30,8 +30,7 @@ std::vector<std::list<int>> karger::EdgeVector::randomCut(const double* demands,
     UnionFind merges(num_v);
     int current_n = num_v - 1; // excludes depot
     double max_weight = start_edges[start_edges.size() - 1].accum_weight;
-    auto edges = start_edges;
-    int remaining_edges = edges.size();
+    int remaining_edges = start_edges.size();
 
     while (current_n > K && remaining_edges > 0)
     {
@@ -41,7 +40,7 @@ std::vector<std::list<int>> karger::EdgeVector::randomCut(const double* demands,
         double total_value = prob_dist(generator);
 
         unsigned int left = 0;
-        unsigned int right = edges.size() - 1;
+        unsigned int right = start_edges.size() - 1;
         bool found = false;
 
         while (!found)
@@ -49,13 +48,13 @@ std::vector<std::list<int>> karger::EdgeVector::randomCut(const double* demands,
             unsigned int middle = left + (right - left)/2;
 
             // Found
-            if ( total_value <= edges[middle].accum_weight && 
-                total_value >= (edges[middle].accum_weight - edges[middle].weight) )
+            if ( total_value < start_edges[middle].accum_weight && 
+                total_value >= (start_edges[middle].accum_weight - start_edges[middle].weight) )
             {
                 uv = middle;
                 found = true;
             }
-            else if (total_value >= edges[middle].accum_weight)
+            else if (total_value >= start_edges[middle].accum_weight)
                 left = middle + 1;
             else
                 right = middle - 1;
@@ -63,14 +62,14 @@ std::vector<std::list<int>> karger::EdgeVector::randomCut(const double* demands,
 
         // uv is now the index to the chosen edge
 
-        if (!edges[uv].chosen)
+        if (!start_edges[uv].chosen)
         {
-            if (merges.find(edges[uv].u) != merges.find(edges[uv].v))
+            if (merges.find(start_edges[uv].u) != merges.find(start_edges[uv].v))
             {
-                merges.unite(edges[uv].u, edges[uv].v);
+                merges.unite(start_edges[uv].u, start_edges[uv].v);
                 --current_n;
             }
-            edges[uv].chosen = true;
+            start_edges[uv].chosen = true;
             remaining_edges--;
         }
     }
@@ -96,6 +95,9 @@ std::vector<std::list<int>> karger::EdgeVector::randomCut(const double* demands,
             sum_of_demands[index] += demands[i];
         }
     }
+
+    for (edge& e : start_edges)
+        e.chosen = false;
 
     return cuts;
 }

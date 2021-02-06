@@ -288,7 +288,7 @@ int main(int argc, char *argv[])
         model.setCallback(&cb);
         model.optimize();
 
-        printf("\nGap: %lf\nRuntime: %lf\n", model.get(GRB_DoubleAttr_MIPGap), model.get(GRB_DoubleAttr_Runtime));
+        printf("\nOBJ: %lf\nGap: %lf\nRuntime: %lf\n", model.get(GRB_DoubleAttr_ObjVal),model.get(GRB_DoubleAttr_MIPGap), model.get(GRB_DoubleAttr_Runtime));
         writeSolution(x, N, V, model.get(GRB_DoubleAttr_ObjVal), 1, command_line["file"].as<std::string>());
 
         // Deallocating
