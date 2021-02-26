@@ -7,9 +7,11 @@
 #include <string>
 #include <vector>
 #include <list>
+#include <limits>
 
 #include "gurobi_c++.h"
 #include "karger.hpp"
+#include "kruskal.hpp"
 
 #include "cxxopts/cxxopts.hpp"
 
@@ -23,7 +25,7 @@ struct Point
 double dist(const Point& a, const Point& b);
 
 std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C);
-double** getHeuristicSol(std::string filename, int N, int V);
+double** getHeuristicSol(std::string filename, int N, int V, double* upper_bound);
 void writeSolution(GRBVar** x, int N, int V, const double obj, const int opt, const std::string& filename);
 
 class subtourelim: public GRBCallback
@@ -37,6 +39,7 @@ class subtourelim: public GRBCallback
         karger::EdgeVector cut_generator;
         subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log):
             x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log) {};
+        
 
     protected:
         void callback()
@@ -141,10 +144,27 @@ class subtourelim: public GRBCallback
             else if (where == GRB_CB_MIPNODE && getIntInfo(GRB_CB_MIPNODE_STATUS) == GRB_OPTIMAL)
             {
                 std::vector<double> sum_of_demands;
+                std::vector<kruskal::edge> kruskal_edges;
 
+                // Setup
                 for (int i = 1; i < N; i++)
-                    for (int j = 1; j < i; j++)
-                        cut_generator.add_edge(i, j, getNodeRel(x[i][j]));
+                    for (int j = 0; j < i; j++)
+                    {
+                        double rel_val = getNodeRel(x[i][j]);
+
+                        // Karger
+                        if (j > 0)
+                            cut_generator.add_edge(i, j, rel_val);
+
+                        // Kruskal
+                        kruskal::edge e;
+                        e.u = i;
+                        e.v = j;
+                        e.length = x[i][j].get(GRB_DoubleAttr_Obj);
+                        e.starting = rel_val > 0.9;
+
+                        kruskal_edges.push_back(e);
+                    }
 
                 // Run Karger 
                 for (int count = 0; count < coefficient * (use_log ? std::log(N) : N); count++)
@@ -173,6 +193,41 @@ class subtourelim: public GRBCallback
                 }
 
                 cut_generator.clear_edges();
+
+                // --------------- GERAÇÃO DE COVER CUTS --------------------------------
+                
+                double msg_cost, max_length;
+                auto msg = kruskal::generateMSG(N, V, kruskal_edges, &msg_cost, &max_length);
+
+                if (msg_cost > getDoubleInfo(GRB_CB_MIPNODE_OBJBND))
+                {
+                    bool** in_msg = new bool*[N];
+                    in_msg[0] = nullptr;
+                    for (int i = 1; i < N; i++)
+                    {
+                        in_msg[i] = new bool[i];
+                        for (int j = 0; j < i; j++)
+                            in_msg[i][j] = false;
+                    }
+
+                    GRBLinExpr c = 0.0;
+                    for (auto e : msg)
+                    {
+                        c += x[e.u][e.v];
+                        in_msg[e.u][e.v] = true;
+                    }
+
+                    // Extended cover
+                    for (auto e : kruskal_edges)
+                        if (!in_msg[e.u][e.v] && e.length > max_length)
+                            c += x[e.u][e.v];
+
+                    addLazy(c, GRB_LESS_EQUAL, msg.size() - 1);
+
+                    for (int i = 1; i < N; i++)
+                        delete[] in_msg[i];
+                    delete[] in_msg;
+                }
             }
         }
 };
@@ -180,7 +235,7 @@ class subtourelim: public GRBCallback
 int main(int argc, char *argv[])
 {
     int V, N;
-    double C, time_limit;
+    double C, time_limit, upper_bound = std::numeric_limits<double>::infinity();
     double coefficient;
     bool use_log, use_heur;
     std::vector<Point> clients;
@@ -222,7 +277,7 @@ int main(int argc, char *argv[])
     N = clients.size();
 
     if (use_heur)
-        heur_vals = getHeuristicSol(command_line["file"].as<std::string>(), N, V);
+        heur_vals = getHeuristicSol(command_line["file"].as<std::string>(), N, V, &upper_bound);
 
     }
     catch(cxxopts::OptionException* e) {
@@ -347,10 +402,9 @@ std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C)
     return points;
 }
 
-double** getHeuristicSol(std::string filename, int N, int V)
+double** getHeuristicSol(std::string filename, int N, int V, double* upper_bound)
 {
     std::ifstream f(filename + ".heu");
-    std::string linebuffer;
     if (!f.is_open())
     {
         std::cout << "Error: couldn't open file " << filename << std::endl;
@@ -366,7 +420,7 @@ double** getHeuristicSol(std::string filename, int N, int V)
             vals[i][j] = 0.0;
     }
 
-    getline(f, linebuffer);
+    f >> (*upper_bound);
     for (int k = 0; k < V; k++)
     {
         int last_vertex, current_vertex;
