@@ -11,7 +11,7 @@
 
 #include "gurobi_c++.h"
 #include "karger.hpp"
-#include "kruskal.hpp"
+#include "spanningcover.hpp"
 
 #include "cxxopts/cxxopts.hpp"
 
@@ -35,10 +35,36 @@ class subtourelim: public GRBCallback
         int N, V;
         double C, coefficient;
         double* demands;
+        int* spanning_cover_constraints;
         bool use_log;
+        int min_K;
         karger::EdgeVector cut_generator;
-        subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log):
-            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log) {};
+        std::vector<spi::edge> ordered_edges;
+        subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log, int* spanning_cover_constraints):
+            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log), spanning_cover_constraints(spanning_cover_constraints) {
+                for (int i = 1; i < N; i++)
+                    for (int j = 0; j < i; j++)
+                    {
+                        spi::edge e;
+                        e.u = i;
+                        e.v = j;
+                        e.d = x[i][j].get(GRB_DoubleAttr_Obj);
+
+                        ordered_edges.push_back(e);
+                    }
+
+                std::sort(ordered_edges.begin(), ordered_edges.end(), [] (const spi::edge& a, const spi::edge& b) {
+                    return a.d < b.d;
+                });
+
+                double total_demand = 0.0;
+                for (int i = 0; i < N; i++)
+                    total_demand += demands[i];
+
+                min_K = std::ceil(total_demand / C);
+            };
+
+        ~subtourelim() {}
         
 
     protected:
@@ -144,27 +170,11 @@ class subtourelim: public GRBCallback
             else if (where == GRB_CB_MIPNODE && getIntInfo(GRB_CB_MIPNODE_STATUS) == GRB_OPTIMAL)
             {
                 std::vector<double> sum_of_demands;
-                std::vector<kruskal::edge> kruskal_edges;
 
-                // Setup
+                // Karger Setup
                 for (int i = 1; i < N; i++)
-                    for (int j = 0; j < i; j++)
-                    {
-                        double rel_val = getNodeRel(x[i][j]);
-
-                        // Karger
-                        if (j > 0)
-                            cut_generator.add_edge(i, j, rel_val);
-
-                        // Kruskal
-                        kruskal::edge e;
-                        e.u = i;
-                        e.v = j;
-                        e.length = x[i][j].get(GRB_DoubleAttr_Obj);
-                        e.starting = rel_val > 0.9;
-
-                        kruskal_edges.push_back(e);
-                    }
+                    for (int j = 1; j < i; j++)
+                        cut_generator.add_edge(i, j, getNodeRel(x[i][j]));
 
                 // Run Karger 
                 for (int count = 0; count < coefficient * (use_log ? std::log(N) : N); count++)
@@ -194,39 +204,27 @@ class subtourelim: public GRBCallback
 
                 cut_generator.clear_edges();
 
-                // --------------- GERAÇÃO DE COVER CUTS --------------------------------
+                // --------------- SPANNING COVER INEQUALITIES --------------------------------
                 
-                double msg_cost, max_length;
-                auto msg = kruskal::generateMSG(N, V, kruskal_edges, &msg_cost, &max_length);
+                // Picking starting edges
+                std::list<spi::edge> preselected;
+                for (auto e : ordered_edges) 
+                    if (getNodeRel(x[e.u][e.v]) >= 0.99) preselected.push_back(e);
 
-                if (msg_cost > getDoubleInfo(GRB_CB_MIPNODE_OBJBND))
+                double lower_bound = spi::getLowerBound(x, ordered_edges, preselected, N, min_K);
+
+                if (lower_bound >= getDoubleInfo(GRB_CB_MIPNODE_OBJBST))
                 {
-                    bool** in_msg = new bool*[N];
-                    in_msg[0] = nullptr;
-                    for (int i = 1; i < N; i++)
-                    {
-                        in_msg[i] = new bool[i];
-                        for (int j = 0; j < i; j++)
-                            in_msg[i][j] = false;
-                    }
-
+                    *spanning_cover_constraints += 1;
+                    int cover_size = 0;
                     GRBLinExpr c = 0.0;
-                    for (auto e : msg)
+                    for (auto e : preselected)
                     {
                         c += x[e.u][e.v];
-                        in_msg[e.u][e.v] = true;
+                        cover_size++;
                     }
 
-                    // Extended cover
-                    for (auto e : kruskal_edges)
-                        if (!in_msg[e.u][e.v] && e.length > max_length)
-                            c += x[e.u][e.v];
-
-                    addLazy(c, GRB_LESS_EQUAL, msg.size() - 1);
-
-                    for (int i = 1; i < N; i++)
-                        delete[] in_msg[i];
-                    delete[] in_msg;
+                    addLazy(c, GRB_LESS_EQUAL, cover_size - 1);
                 }
             }
         }
@@ -278,7 +276,6 @@ int main(int argc, char *argv[])
 
     if (use_heur)
         heur_vals = getHeuristicSol(command_line["file"].as<std::string>(), N, V, &upper_bound);
-
     }
     catch(cxxopts::OptionException* e) {
         std::cout << options.help() << std::endl;
@@ -339,11 +336,14 @@ int main(int argc, char *argv[])
         for (int i = 0; i < N; i++)
             demands[i] = clients[i].d;
 
-        subtourelim cb(x, demands, N, V, C, coefficient, use_log);
+        int num_spanning_cover = 0;
+
+        model.update();
+        subtourelim cb(x, demands, N, V, C, coefficient, use_log, &num_spanning_cover);
         model.setCallback(&cb);
         model.optimize();
 
-        printf("\nOBJ: %lf\nGap: %lf\nRuntime: %lf\n", model.get(GRB_DoubleAttr_ObjVal),model.get(GRB_DoubleAttr_MIPGap), model.get(GRB_DoubleAttr_Runtime));
+        printf("\nOBJ: %lf\nGap: %lf\nRuntime: %lf\nCover cuts: %i\n", model.get(GRB_DoubleAttr_ObjVal),model.get(GRB_DoubleAttr_MIPGap), model.get(GRB_DoubleAttr_Runtime), num_spanning_cover);
         writeSolution(x, N, V, model.get(GRB_DoubleAttr_ObjVal), 1, command_line["file"].as<std::string>());
 
         // Deallocating

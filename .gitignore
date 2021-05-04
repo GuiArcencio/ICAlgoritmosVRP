@@ -5,3 +5,5 @@ tp
 .vscode
 
 *.o
+*.sh
+CVRPSolver
