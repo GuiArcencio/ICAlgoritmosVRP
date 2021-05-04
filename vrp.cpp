@@ -180,7 +180,7 @@ class subtourelim: public GRBCallback
                 for (int count = 0; count < coefficient * (use_log ? std::log(N) : N); count++)
                 {
                     sum_of_demands.clear();
-                    auto cuts = cut_generator.randomCut(demands, sum_of_demands, V);
+                    auto cuts = cut_generator.randomCut(demands, sum_of_demands, min_K);
 
                     // Going through each cut
                     for (int cut_i = 0; cut_i < cuts.size(); ++cut_i)
@@ -209,7 +209,7 @@ class subtourelim: public GRBCallback
                 // Picking starting edges
                 std::list<spi::edge> preselected;
                 for (auto e : ordered_edges) 
-                    if (getNodeRel(x[e.u][e.v]) >= 0.99) preselected.push_back(e);
+                    if (getNodeRel(x[e.u][e.v]) >= 0.9) preselected.push_back(e);
 
                 double lower_bound = spi::getLowerBound(x, ordered_edges, preselected, N, min_K);
 
@@ -388,8 +388,9 @@ std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C)
     std::vector<Point> points;
     points.reserve(N);
 
-    while (getline(f, linebuffer)) 
+    for (int i = 0; i < N; i++)
     {
+        getline(f, linebuffer);
         if (!linebuffer.empty()) 
         {
             Point p;

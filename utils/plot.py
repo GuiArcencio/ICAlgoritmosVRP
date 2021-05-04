@@ -1,10 +1,10 @@
-import networkx as nx
-import matplotlib.pyplot as plt
 import sys
+if __name__ == '__main__' and len(sys.argv) > 1:
+    import networkx as nx
+    import matplotlib.pyplot as plt
 
-G = nx.DiGraph()
+    G = nx.DiGraph()
 
-if len(sys.argv) > 1:
     points_file = sys.argv[1].strip()
     with open(points_file, 'r') as input_data_file:
         input_data = input_data_file.read()
