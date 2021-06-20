@@ -11,8 +11,6 @@
 
 #include "gurobi_c++.h"
 #include "karger.hpp"
-#include "spanningcover.hpp"
-
 #include "cxxopts/cxxopts.hpp"
 
 struct Point 
@@ -39,24 +37,8 @@ class subtourelim: public GRBCallback
         bool use_log;
         int min_K;
         karger::EdgeVector cut_generator;
-        std::vector<spi::edge> ordered_edges;
         subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log, int* spanning_cover_constraints):
             x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log), spanning_cover_constraints(spanning_cover_constraints) {
-                for (int i = 1; i < N; i++)
-                    for (int j = 0; j < i; j++)
-                    {
-                        spi::edge e;
-                        e.u = i;
-                        e.v = j;
-                        e.d = x[i][j].get(GRB_DoubleAttr_Obj);
-
-                        ordered_edges.push_back(e);
-                    }
-
-                std::sort(ordered_edges.begin(), ordered_edges.end(), [] (const spi::edge& a, const spi::edge& b) {
-                    return a.d < b.d;
-                });
-
                 double total_demand = 0.0;
                 for (int i = 0; i < N; i++)
                     total_demand += demands[i];
@@ -203,29 +185,6 @@ class subtourelim: public GRBCallback
                 }
 
                 cut_generator.clear_edges();
-
-                // --------------- SPANNING COVER INEQUALITIES --------------------------------
-                
-                // Picking starting edges
-                std::list<spi::edge> preselected;
-                for (auto e : ordered_edges) 
-                    if (getNodeRel(x[e.u][e.v]) >= 0.9) preselected.push_back(e);
-
-                double lower_bound = spi::getLowerBound(x, ordered_edges, preselected, N, min_K);
-
-                if (lower_bound >= getDoubleInfo(GRB_CB_MIPNODE_OBJBST))
-                {
-                    *spanning_cover_constraints += 1;
-                    int cover_size = 0;
-                    GRBLinExpr c = 0.0;
-                    for (auto e : preselected)
-                    {
-                        c += x[e.u][e.v];
-                        cover_size++;
-                    }
-
-                    addLazy(c, GRB_LESS_EQUAL, cover_size - 1);
-                }
             }
         }
 };
