@@ -309,6 +309,13 @@ int main(int argc, char *argv[])
             model.addConstr(c, GRB_EQUAL, 2);
         }
 
+        double total_demands = 0.0;
+        for (auto &p : clients)
+            total_demands += p.d;
+
+        V = std::min<int>(V, std::ceil((2*total_demands) / C));
+        printf("%i\n", V);
+
         // Degree constraints (warehouse)
         GRBLinExpr c = 0.0;
         for (int i = 1; i < N; i++)
@@ -566,6 +573,7 @@ void writeSolution(GRBVar** x, int N, int V, const double obj, const int opt, co
         } while (next != 0);
         tour.push_back(0);
 
+        if (tour.size() > 2)
         for (auto it = tour.begin(); it != tour.end(); ++it)
         {
             f << *it;
