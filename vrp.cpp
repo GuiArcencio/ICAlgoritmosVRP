@@ -8,6 +8,8 @@
 #include <vector>
 #include <list>
 #include <limits>
+#include <queue>
+#include <chrono>
 
 #include "gurobi_c++.h"
 #include "karger.hpp"
@@ -22,7 +24,7 @@ struct Point
 
 double dist(const Point& a, const Point& b);
 
-std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C);
+std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, double **carbon_factors);
 double** getHeuristicSol(std::string filename, int N, int V, double* upper_bound);
 void writeSolution(GRBVar** x, int N, int V, const double obj, const int opt, const std::string& filename);
 
@@ -38,7 +40,7 @@ class subtourelim: public GRBCallback
         int min_K;
         karger::EdgeVector cut_generator;
         subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log, int* spanning_cover_constraints):
-            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log), spanning_cover_constraints(spanning_cover_constraints) {
+            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, std::chrono::system_clock::now().time_since_epoch().count()), coefficient(coefficient), use_log(use_log), spanning_cover_constraints(spanning_cover_constraints) {
                 double total_demand = 0.0;
                 for (int i = 0; i < N; i++)
                     total_demand += demands[i];
@@ -189,22 +191,34 @@ class subtourelim: public GRBCallback
         }
 };
 
+struct weights
+{
+    double w1, w2;
+    int layer;
+};
+
 int main(int argc, char *argv[])
 {
-    int V, N;
+    int V, N, MAX_WEIGHTS_LAYERS;
     double C, time_limit, upper_bound = std::numeric_limits<double>::infinity();
     double coefficient;
-    bool use_log, use_heur;
+    double **carbon_factors = nullptr;
+    bool use_log, use_heur, use_tcheby, normalize;
     std::vector<Point> clients;
+    std::string csv_filename;
     double **heur_vals = nullptr;
 
     cxxopts::Options options("CVRPSolver", "Outputs an exact solution for a CVRP instance");
     options.add_options()
         ("f,file", "Input file name", cxxopts::value<std::string>())
+        ("o,csv-output", "CSV output file name", cxxopts::value<std::string>())
         ("H,use-heuristic", "Use a heuristic solution from <input-file-name>.heu", cxxopts::value<bool>()->default_value("false"))
         ("C,karger-coefficient", "Constant coefficient for how many times Karger's Algorithm will be executed", cxxopts::value<double>()->default_value("10.0"))
         ("l,use-log-n", "Run Karger's Algorithm O(log n) times instead of O(n)", cxxopts::value<bool>()->default_value("false"))
         ("t,time-limit", "Time limit for the solver in seconds", cxxopts::value<double>()->default_value("3600.0"))
+        ("T,infinite-metric", "Use the infinite (Tchebycheff) metric", cxxopts::value<bool>()->default_value("false"))
+        ("N,normalization", "Normalize objectives", cxxopts::value<bool>()->default_value("false"))
+        ("L,weight-layers", "Depth of the weight recursion", cxxopts::value<int>()->default_value("2"))
         ("h,help", "Prints this page")
     ;
 
@@ -219,18 +233,27 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
-    if (!command_line.count("file"))
+    if (!command_line.count("file") || !command_line.count("csv-output"))
     {
         std::cout << options.help() << std::endl;
         exit(1);
     }
 
+    csv_filename = command_line["csv-output"].as<std::string>();
     coefficient = command_line["karger-coefficient"].as<double>();
     use_log = command_line["use-log-n"].as<bool>();
     use_heur = command_line["use-heuristic"].as<bool>();
+    use_tcheby = command_line["infinite-metric"].as<bool>();
+    normalize = command_line["normalization"].as<bool>();
     time_limit = command_line["time-limit"].as<double>();
+    MAX_WEIGHTS_LAYERS = command_line["weight-layers"].as<int>();
 
-    clients = getPointsFromFile(command_line["file"].as<std::string>(), &V, &C);
+    carbon_factors = new double*[N];
+    carbon_factors[0] = nullptr;
+    for (int i = 1; i < N; i++)
+        carbon_factors[i] = new double[i];
+
+    clients = getPointsFromFile(command_line["file"].as<std::string>(), &V, &C, carbon_factors);
     N = clients.size();
 
     if (use_heur)
@@ -249,6 +272,7 @@ int main(int argc, char *argv[])
         GRBModel model = GRBModel(env);
         model.set(GRB_IntParam_LazyConstraints, 1);
         model.set(GRB_DoubleParam_TimeLimit, time_limit);
+        model.set(GRB_IntParam_OutputFlag, 1);
 
         // x_e variables
         GRBVar **x = new GRBVar*[N];
@@ -260,7 +284,7 @@ int main(int argc, char *argv[])
             {
                 std::string varname = "x[" + std::to_string(i) + "][" + std::to_string(j) + "]";
                 double upper_limit = j == 0 ? 2.0 : 1.0;
-                row[j] = model.addVar(0.0, upper_limit, dist(clients[i], clients[j]), GRB_INTEGER, varname);
+                row[j] = model.addVar(0.0, upper_limit, 0, GRB_INTEGER, varname);
                 if (use_heur)
                     row[j].set(GRB_DoubleAttr_Start, heur_vals[i][j]);
             }
@@ -295,15 +319,111 @@ int main(int argc, char *argv[])
         for (int i = 0; i < N; i++)
             demands[i] = clients[i].d;
 
-        int num_spanning_cover = 0;
-
+        
         model.update();
+        int num_spanning_cover = 0;
         subtourelim cb(x, demands, N, V, C, coefficient, use_log, &num_spanning_cover);
         model.setCallback(&cb);
-        model.optimize();
 
-        printf("\nOBJ: %lf\nGap: %lf\nRuntime: %lf\nCover cuts: %i\n", model.get(GRB_DoubleAttr_ObjVal),model.get(GRB_DoubleAttr_MIPGap), model.get(GRB_DoubleAttr_Runtime), num_spanning_cover);
-        writeSolution(x, N, V, model.get(GRB_DoubleAttr_ObjVal), 1, command_line["file"].as<std::string>());
+        // Objectives
+
+        GRBLinExpr obj_distance_traveled = 0.0;
+        for (int i = 1; i < N; i++)
+            for (int j = 0; j < i; j++)
+                obj_distance_traveled +=  dist(clients[i], clients[j]) * x[i][j];
+
+        GRBLinExpr obj_carbon_emissions = 0.0;
+        for (int i = 1; i < N; i++)
+            for (int j = 0; j < i; j++)
+                obj_carbon_emissions += carbon_factors[i][j] * dist(clients[i], clients[j]) * x[i][j];
+
+        for (int i = 1; i < N; i++)
+            delete[] carbon_factors[i];
+        delete[] carbon_factors;
+
+        FILE *f = fopen(csv_filename.c_str(), "w");
+
+        model.setObjective(obj_distance_traveled, GRB_MINIMIZE);
+        model.optimize();
+        double best_obj1 = model.get(GRB_DoubleAttr_ObjVal);
+
+        fprintf(f, "%lf,%lf\n", obj_distance_traveled.getValue(), obj_carbon_emissions.getValue());
+
+        model.setObjective(obj_carbon_emissions, GRB_MINIMIZE);
+        model.optimize();
+        double best_obj2 = model.get(GRB_DoubleAttr_ObjVal);
+
+        fprintf(f, "%lf,%lf\n", obj_distance_traveled.getValue(), obj_carbon_emissions.getValue());
+
+        printf("Minimum distance traveled: %lf\nMinimum carbon emissions: %lf\n", best_obj1, best_obj2);
+
+        std::queue<weights> Q;
+        Q.push({ 1, 0, 0 });
+        Q.push({ 0, 1, 0 });
+
+        printf("\n-------------------\n");
+        while (!Q.empty()) 
+        {
+            weights p1 = Q.front();
+            Q.pop();
+            weights p2 = Q.front();
+            Q.pop();
+
+            weights p3 = { (p1.w1 + p2.w1)/2, (p1.w2 + p2.w2)/2, std::max(p1.layer, p2.layer) + 1 };
+
+            GRBVar makespan;
+            GRBConstr makespan_1, makespan_2;
+            if (use_tcheby)
+            {
+                makespan = model.addVar(0.0, std::numeric_limits<double>::infinity(), 0.0, GRB_CONTINUOUS, "D");
+                if (normalize)
+                {
+                    makespan_1 = model.addConstr(p3.w1 * (obj_distance_traveled - best_obj1) * (1/best_obj1), GRB_LESS_EQUAL, makespan, "makespan_1");
+                    makespan_2 = model.addConstr(p3.w2 * (obj_carbon_emissions - best_obj2) * (1/best_obj2), GRB_LESS_EQUAL, makespan, "makespan_2");
+                } 
+                else
+                {
+                    makespan_1 = model.addConstr(p3.w1 * (obj_distance_traveled - best_obj1), GRB_LESS_EQUAL, makespan, "makespan_1");
+                    makespan_2 = model.addConstr(p3.w2 * (obj_carbon_emissions - best_obj2), GRB_LESS_EQUAL, makespan, "makespan_2");
+                }
+                GRBLinExpr obj_makespan = 0.0;
+                obj_makespan += makespan;
+                model.setObjective(obj_makespan, GRB_MINIMIZE);
+            }
+            else
+            {
+                if (normalize)
+                    model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) * (1/best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2) * (1/best_obj2), GRB_MINIMIZE);
+                else
+                    model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2), GRB_MINIMIZE);
+            }
+
+            model.optimize();
+
+            printf("Weights (%lf, %lf)\n", p3.w1, p3.w2);
+            printf("Distance traveled: %lf\n", obj_distance_traveled.getValue());
+            printf("Carbon emission: %lf\n", obj_carbon_emissions.getValue());
+            printf("-------------------\n");
+
+            fprintf(f, "%lf,%lf\n", obj_distance_traveled.getValue(), obj_carbon_emissions.getValue());
+
+            if (use_tcheby)
+            {
+                model.remove(makespan_1);
+                model.remove(makespan_2);
+                model.remove(makespan);
+            }
+
+            if (p3.layer < MAX_WEIGHTS_LAYERS) 
+            {
+                Q.push(p1);
+                Q.push(p3);
+
+                Q.push(p2);
+                Q.push(p3);
+            }
+        }
+        fclose(f);
 
         // Deallocating
         for (int i = 1; i < N; i++)
@@ -329,7 +449,7 @@ double dist(const Point& a, const Point& b)
     return std::sqrt( (a.x - b.x)*(a.x - b.x) + (a.y - b.y)*(a.y - b.y) );
 }
 
-std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C)
+std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, double **carbon_factors)
 {
     int N;
     
@@ -357,6 +477,15 @@ std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C)
             points.push_back(p);
         }
     }
+
+    getline(f, linebuffer);
+
+    double factor;
+    for (int i = 1; i < N; i++)
+        for (int j = 0; j < i; j++) {
+            f >> factor;
+            carbon_factors[i][j] = factor;
+        }
 
     f.close();
     return points;
