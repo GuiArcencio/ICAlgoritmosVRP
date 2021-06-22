@@ -1,6 +1,7 @@
 *.o
 *.sh
 *.sol
+*.csv
 
 reports
 tp

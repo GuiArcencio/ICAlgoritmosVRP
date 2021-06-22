@@ -8,6 +8,7 @@
 #include <vector>
 #include <list>
 #include <limits>
+#include <chrono>
 
 #include "gurobi_c++.h"
 #include "karger.hpp"
@@ -38,7 +39,7 @@ class subtourelim: public GRBCallback
         int min_K;
         karger::EdgeVector cut_generator;
         subtourelim(GRBVar** x, double* demands, int N, int V, double C, double coefficient, bool use_log, int* spanning_cover_constraints):
-            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, 1), coefficient(coefficient), use_log(use_log), spanning_cover_constraints(spanning_cover_constraints) {
+            x(x), N(N), V(V), C(C), demands(demands), cut_generator(N, std::chrono::system_clock::now().time_since_epoch().count()), coefficient(coefficient), use_log(use_log), spanning_cover_constraints(spanning_cover_constraints) {
                 double total_demand = 0.0;
                 for (int i = 0; i < N; i++)
                     total_demand += demands[i];
