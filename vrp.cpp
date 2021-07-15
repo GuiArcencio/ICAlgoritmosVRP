@@ -353,12 +353,14 @@ int main(int argc, char *argv[])
         model.setObjective(obj_distance_traveled, GRB_MINIMIZE);
         model.optimize();
         double best_obj1 = model.get(GRB_DoubleAttr_ObjVal);
+        double nadir_obj2 = obj_carbon_emissions.getValue();
 
         fprintf(f, "%lf,%lf\n", obj_distance_traveled.getValue(), obj_carbon_emissions.getValue());
 
         model.setObjective(obj_carbon_emissions, GRB_MINIMIZE);
         model.optimize();
         double best_obj2 = model.get(GRB_DoubleAttr_ObjVal);
+        double nadir_obj1 = obj_distance_traveled.getValue();
 
         fprintf(f, "%lf,%lf\n", obj_distance_traveled.getValue(), obj_carbon_emissions.getValue());
 
@@ -385,8 +387,8 @@ int main(int argc, char *argv[])
                 makespan = model.addVar(0.0, std::numeric_limits<double>::infinity(), 0.0, GRB_CONTINUOUS, "D");
                 if (normalize)
                 {
-                    makespan_1 = model.addConstr(p3.w1 * (obj_distance_traveled - best_obj1) * (1/best_obj1), GRB_LESS_EQUAL, makespan, "makespan_1");
-                    makespan_2 = model.addConstr(p3.w2 * (obj_carbon_emissions - best_obj2) * (1/best_obj2), GRB_LESS_EQUAL, makespan, "makespan_2");
+                    makespan_1 = model.addConstr(p3.w1 * (obj_distance_traveled - best_obj1) / (nadir_obj1 - best_obj1), GRB_LESS_EQUAL, makespan, "makespan_1");
+                    makespan_2 = model.addConstr(p3.w2 * (obj_carbon_emissions - best_obj2) / (nadir_obj2 - best_obj2), GRB_LESS_EQUAL, makespan, "makespan_2");
                 } 
                 else
                 {
@@ -400,7 +402,7 @@ int main(int argc, char *argv[])
             else
             {
                 if (normalize)
-                    model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) * (1/best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2) * (1/best_obj2), GRB_MINIMIZE);
+                    model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) / (nadir_obj1 - best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2) / (nadir_obj2 - best_obj2), GRB_MINIMIZE);
                 else
                     model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2), GRB_MINIMIZE);
             }
