@@ -24,7 +24,7 @@ struct Point
 
 double dist(const Point& a, const Point& b);
 
-std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, double **carbon_factors);
+std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, double**& carbon_factors);
 double** getHeuristicSol(std::string filename, int N, int V, double* upper_bound);
 void writeSolution(GRBVar** x, int N, int V, const double obj, const int opt, const std::string& filename);
 
@@ -203,7 +203,7 @@ int main(int argc, char *argv[])
     double C, time_limit, upper_bound = std::numeric_limits<double>::infinity();
     double coefficient;
     double **carbon_factors = nullptr;
-    bool use_log, use_heur, use_tcheby, normalize;
+    bool use_log, use_heur, use_tcheby, normalize, use_nadir;
     std::vector<Point> clients;
     std::string csv_filename;
     double **heur_vals = nullptr;
@@ -218,6 +218,7 @@ int main(int argc, char *argv[])
         ("t,time-limit", "Time limit for the solver in seconds", cxxopts::value<double>()->default_value("3600.0"))
         ("T,infinite-metric", "Use the infinite (Tchebycheff) metric", cxxopts::value<bool>()->default_value("false"))
         ("N,normalization", "Normalize objectives", cxxopts::value<bool>()->default_value("false"))
+        ("y,nadir", "Use nadir points for normalization", cxxopts::value<bool>()->default_value("false"))
         ("L,weight-layers", "Depth of the weight recursion", cxxopts::value<int>()->default_value("2"))
         ("h,help", "Prints this page")
     ;
@@ -244,14 +245,10 @@ int main(int argc, char *argv[])
     use_log = command_line["use-log-n"].as<bool>();
     use_heur = command_line["use-heuristic"].as<bool>();
     use_tcheby = command_line["infinite-metric"].as<bool>();
+    use_nadir = command_line["nadir"].as<bool>();
     normalize = command_line["normalization"].as<bool>();
     time_limit = command_line["time-limit"].as<double>();
     MAX_WEIGHTS_LAYERS = command_line["weight-layers"].as<int>();
-
-    carbon_factors = new double*[N];
-    carbon_factors[0] = nullptr;
-    for (int i = 1; i < N; i++)
-        carbon_factors[i] = new double[i];
 
     clients = getPointsFromFile(command_line["file"].as<std::string>(), &V, &C, carbon_factors);
     N = clients.size();
@@ -314,7 +311,6 @@ int main(int argc, char *argv[])
             total_demands += p.d;
 
         V = std::min<int>(V, std::ceil((2*total_demands) / C));
-        printf("%i\n", V);
 
         // Degree constraints (warehouse)
         GRBLinExpr c = 0.0;
@@ -387,8 +383,8 @@ int main(int argc, char *argv[])
                 makespan = model.addVar(0.0, std::numeric_limits<double>::infinity(), 0.0, GRB_CONTINUOUS, "D");
                 if (normalize)
                 {
-                    makespan_1 = model.addConstr(p3.w1 * (obj_distance_traveled - best_obj1) / (nadir_obj1 - best_obj1), GRB_LESS_EQUAL, makespan, "makespan_1");
-                    makespan_2 = model.addConstr(p3.w2 * (obj_carbon_emissions - best_obj2) / (nadir_obj2 - best_obj2), GRB_LESS_EQUAL, makespan, "makespan_2");
+                    makespan_1 = model.addConstr(p3.w1 * (obj_distance_traveled - best_obj1) / (use_nadir ? (nadir_obj1 - best_obj1) : best_obj1), GRB_LESS_EQUAL, makespan, "makespan_1");
+                    makespan_2 = model.addConstr(p3.w2 * (obj_carbon_emissions - best_obj2) / (use_nadir ? (nadir_obj2 - best_obj2) : best_obj2), GRB_LESS_EQUAL, makespan, "makespan_2");
                 } 
                 else
                 {
@@ -402,7 +398,7 @@ int main(int argc, char *argv[])
             else
             {
                 if (normalize)
-                    model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) / (nadir_obj1 - best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2) / (nadir_obj2 - best_obj2), GRB_MINIMIZE);
+                    model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) / (use_nadir ? (nadir_obj1 - best_obj1) : best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2) / (use_nadir ? (nadir_obj2 - best_obj2) : best_obj2), GRB_MINIMIZE);
                 else
                     model.setObjective(p3.w1 * (obj_distance_traveled - best_obj1) + p3.w2 * (obj_carbon_emissions - best_obj2), GRB_MINIMIZE);
             }
@@ -458,7 +454,7 @@ double dist(const Point& a, const Point& b)
     return std::sqrt( (a.x - b.x)*(a.x - b.x) + (a.y - b.y)*(a.y - b.y) );
 }
 
-std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, double **carbon_factors)
+std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, double**& carbon_factors)
 {
     int N;
     
@@ -472,6 +468,11 @@ std::vector<Point> getPointsFromFile(std::string filename, int *V, double *C, do
 
     getline(f, linebuffer);
     sscanf(linebuffer.c_str(), "%i %i %lf\n", &N, V, C);
+
+    carbon_factors = new double*[N];
+    carbon_factors[0] = nullptr;
+    for (int i = 1; i < N; i++)
+        carbon_factors[i] = new double[i];
 
     std::vector<Point> points;
     points.reserve(N);
